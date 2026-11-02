@@ -1,0 +1,47 @@
+name: Build
+
+on:
+  push:
+    branches: [main, master]
+    tags: ['v*']
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  windows:
+    name: Windows build
+    runs-on: windows-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Install PyInstaller
+        run: python -m pip install --upgrade pip pyinstaller
+
+      - name: Check launcher
+        run: python horizon_offline.py --check
+
+      - name: Build executable
+        run: pwsh -NoProfile -ExecutionPolicy Bypass -File ./build.ps1 -SkipInstall
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: HorizonOffline-win64
+          path: dist/HorizonOffline-win64.zip
+          if-no-files-found: error
+
+      - name: Publish release
+        if: startsWith(github.ref, 'refs/tags/v')
+        uses: softprops/action-gh-release@v2
+        with:
+          files: dist/HorizonOffline-win64.zip
+          generate_release_notes: true
