@@ -17,11 +17,13 @@ import json
 import lzma
 import os
 import queue
+import re
 import subprocess
 import sys
 import threading
 import tkinter as tk
 import urllib.request
+import zipfile
 from pathlib import Path
 from tkinter import messagebox, ttk
 
@@ -192,6 +194,56 @@ def default_nick() -> str:
     return "Player"
 
 
+MOD_ID_RE = re.compile(r'^\s*id\s*=\s*"([a-z0-9_]{1,64})"', re.MULTILINE)
+
+
+def mod_id(path: Path) -> str | None:
+    """Id of a content mod: a .hmod file or an unpacked folder with horizon-mod.toml."""
+    try:
+        if path.is_dir():
+            text = (path / "horizon-mod.toml").read_text(encoding="utf-8")
+        elif path.suffix.lower() == ".hmod":
+            with zipfile.ZipFile(path) as archive:
+                text = archive.read("horizon-mod.toml").decode("utf-8")
+        else:
+            return None
+    except (OSError, KeyError, zipfile.BadZipFile, UnicodeDecodeError):
+        return None
+    found = MOD_ID_RE.search(text)
+    return found.group(1) if found else None
+
+
+def enable_installed_mods(home: Path) -> list[str]:
+    """Turn on the mods in horizon-mods/ that have no on/off line yet.
+
+    Horizon keeps every mod off until it is switched on in Options > Mods; that choice
+    is the `mod.<id>:true` line in horizon-mods.txt. A mod the player switched off in
+    the game (`mod.<id>:false`) stays off. Returns the ids it turned on.
+    """
+    mods_dir = home / "horizon-mods"
+    if not mods_dir.is_dir():
+        return []
+    ids = [i for i in (mod_id(entry) for entry in sorted(mods_dir.iterdir())) if i]
+    path = home / "horizon-mods.txt"
+    try:
+        text = path.read_text(encoding="utf-8")
+    except OSError:
+        text = ""
+    known = set()
+    for line in text.splitlines():
+        key, sep, _ = line.partition(":")
+        key = key.strip()
+        if sep and key.startswith("mod."):
+            known.add(key[4:])
+    added = [i for i in dict.fromkeys(ids) if i not in known]
+    if added:
+        if text and not text.endswith("\n"):
+            text += "\n"
+        text += "".join(f"mod.{i}:true\n" for i in added)
+        path.write_text(text, encoding="utf-8")
+    return added
+
+
 def launch_game(version_dir: Path, world: str, nick: str, home: Path) -> None:
     """Start horizon-ctl in its own window; it opens the game and waits for it."""
     args = [str(version_dir / "horizon-ctl.exe"), "launch"]
@@ -201,14 +253,25 @@ def launch_game(version_dir: Path, world: str, nick: str, home: Path) -> None:
         args += ["--name", nick]
     env = os.environ.copy()
     env["HORIZON_HOME"] = str(home)
+    try:
+        enable_installed_mods(home)
+    except OSError:
+        pass  # the game still starts; the mod can be switched on in Options > Mods
+    # Keep what the game says (a mod that did not load is reported there).
+    log = subprocess.DEVNULL
+    try:
+        home.mkdir(parents=True, exist_ok=True)
+        log = (home / "horizon-offline.log").open("ab")
+    except OSError:
+        pass
     subprocess.Popen(
         args,
         cwd=str(version_dir),
         env=env,
         creationflags=CREATE_NO_WINDOW,
         stdin=subprocess.DEVNULL,
-        stdout=subprocess.DEVNULL,
-        stderr=subprocess.DEVNULL,
+        stdout=log,
+        stderr=subprocess.STDOUT if log is not subprocess.DEVNULL else subprocess.DEVNULL,
     )
 
 
